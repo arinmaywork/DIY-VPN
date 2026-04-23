@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local secrets — never commit!
+*.env
+*.env.local
+credentials.env
+share-links.txt
+*.key
+*.pem
+*.crt
+
+# Rendered Fly config (contains your app name; safe enough but not the canonical source)
+flyio/fly.toml
+telegram-bot/fly.toml
+
+# Local build artifacts
+*.log
+*.pid
+node_modules/
+__pycache__/
+*.pyc
+
+# Backup files
+*.bak
+*.orig

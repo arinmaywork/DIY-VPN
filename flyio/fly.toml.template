@@ -1,0 +1,62 @@
+# Fly.io app manifest for DIY-VPN.
+# Rendered by ./deploy.sh — don't edit the placeholders by hand; run the
+# deploy script instead.
+
+app            = "APP_NAME_PLACEHOLDER"
+primary_region = "REGION_PLACEHOLDER"
+
+# ─── Build ────────────────────────────────────────────────────────────────────
+[build]
+  dockerfile = "Dockerfile"
+
+# ─── Environment (non-secret) ─────────────────────────────────────────────────
+# Secrets (UUID, passwords, Reality keys) are generated inside the container
+# on first boot and persisted to the volume below. The entrypoint writes them
+# to /data/credentials.env so they survive redeploys.
+[env]
+  TZ           = "UTC"
+  REALITY_DEST = "www.microsoft.com"
+  REALITY_SNI  = "www.microsoft.com"
+
+# ─── Persistent volume for credentials + TLS cert ────────────────────────────
+# 1 GB is overkill but the smallest increment. Fly's first 3 GB of volume
+# storage is cheap (~$0.15/GB/mo, inside the $5 included credit).
+[mounts]
+  source         = "diyvpn_data"
+  destination    = "/data"
+  initial_size   = "1gb"
+
+# ─── Service 1: raw TCP/443 (VLESS + Reality) ────────────────────────────────
+# IMPORTANT: no `handlers = ["tls"]` — Reality does its own TLS; we want
+# pure TCP passthrough from the Fly edge to the container.
+[[services]]
+  internal_port         = 443
+  protocol              = "tcp"
+  auto_stop_machines    = "off"
+  auto_start_machines   = true
+  min_machines_running  = 1
+
+  [[services.ports]]
+    port = 443
+
+  [[services.tcp_checks]]
+    interval      = "30s"
+    timeout       = "5s"
+    grace_period  = "30s"
+
+# ─── Service 2: UDP/443 (Hysteria2) ──────────────────────────────────────────
+[[services]]
+  internal_port         = 443
+  protocol              = "udp"
+
+  [[services.ports]]
+    port = 443
+
+# ─── VM size ─────────────────────────────────────────────────────────────────
+# shared-cpu-1x @ 256 MB is the smallest and cheapest. Xray + Hysteria2 both
+# fit comfortably in 256 MB for a single-user VPN. Bump to 512 MB if you add
+# multiple users or see OOMs.
+[[vm]]
+  cpu_kind    = "shared"
+  cpus        = 1
+  memory_mb   = 256

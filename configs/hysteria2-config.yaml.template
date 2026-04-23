@@ -1,0 +1,57 @@
+# Hysteria2 server configuration
+# Docs: https://v2.hysteria.network/docs/advanced/Full-Server-Config/
+
+# Listen on UDP/443 (primary). The masquerade target makes the port look like
+# a normal HTTPS server when probed by a browser or scanner.
+listen: :443
+
+# ───── TLS (self-signed cert; clients use insecure: true OR pin the SNI) ─────
+# We avoid Let's Encrypt to skip the domain requirement. The cert is generated
+# locally by the install script.
+tls:
+  cert: /etc/hysteria/server.crt
+  key:  /etc/hysteria/server.key
+
+# ───── Authentication ─────
+auth:
+  type: password
+  password: __HY2_PASSWORD__
+
+# ───── Obfuscation (Salamander) ─────
+# Wraps QUIC packets in salsa20-based obfuscation so DPI can't fingerprint
+# the QUIC handshake. CRITICAL for China.
+obfs:
+  type: salamander
+  salamander:
+    password: __HY2_OBFS_PASSWORD__
+
+# ───── Bandwidth (server-advertised; client BBR uses this as cap) ─────
+# Set to your VM's actual bandwidth. Oracle Always Free A1 has ~1 Gbps.
+bandwidth:
+  up: 1 gbps
+  down: 1 gbps
+
+# ───── QUIC tuning (sane defaults; bumped for high-BDP links) ─────
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  maxIncomingStreams: 1024
+  disablePathMTUDiscovery: false
+
+# ───── Masquerade ─────
+# When something probes UDP/443 with anything but a valid Hysteria handshake,
+# we proxy it to a real website. To a censor, the port looks like a legit
+# QUIC-enabled HTTPS server.
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.bing.com
+    rewriteHost: true
+
+# ───── Logging ─────
+# Minimal logs — preserves user privacy.
+ignoreClientBandwidth: false
+disableUDP: false

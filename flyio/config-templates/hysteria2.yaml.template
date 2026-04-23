@@ -1,0 +1,45 @@
+# Hysteria2 server config (Fly.io container edition)
+# Cert paths point at the persistent volume so they survive redeploys.
+
+listen: :443
+
+tls:
+  cert: __CERT_DIR__/server.crt
+  key:  __CERT_DIR__/server.key
+
+auth:
+  type: password
+  password: __HY2_PASSWORD__
+
+# Salsa20-based obfuscation of the QUIC handshake — critical for China.
+obfs:
+  type: salamander
+  salamander:
+    password: __HY2_OBFS_PASSWORD__
+
+# Advertise 1 Gbps — Fly's shared-cpu-1x usually tops out well below this.
+# BBR-like cc will cap naturally.
+bandwidth:
+  up: 1 gbps
+  down: 1 gbps
+
+# QUIC flow-control tuning for high-BDP (trans-Pacific) links.
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  maxIncomingStreams: 1024
+  disablePathMTUDiscovery: false
+
+# Unauthenticated QUIC probes get reverse-proxied to bing.com — looks like
+# a legit QUIC HTTPS server to scanners.
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.bing.com
+    rewriteHost: true
+
+ignoreClientBandwidth: false
+disableUDP: false
