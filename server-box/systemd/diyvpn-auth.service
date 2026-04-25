@@ -1,0 +1,21 @@
+[Unit]
+Description=DIY-VPN Hysteria2 HTTP auth backend
+After=network.target
+Before=hysteria-server.service
+
+[Service]
+Type=simple
+User=hysteria
+Group=hysteria
+ExecStart=/usr/bin/python3 /usr/local/bin/diyvpn-auth.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

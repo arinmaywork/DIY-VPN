@@ -108,15 +108,18 @@ async def query_stats() -> dict[str, Any]:
     Calls `xray api statsquery --server 127.0.0.1:10085` inside the container.
     """
     raw = await fly_api.ssh_exec(
-        "/usr/local/bin/xray api statsquery --server=127.0.0.1:10085 -reset=false 2>&1 || true"
+        "/usr/local/bin/xray api statsquery --server=127.0.0.1:10085 --reset=false 2>&1 || true"
     )
     return _parse_stats(raw)
 
 
 async def query_online() -> dict[str, int]:
     """Returns {email: online_session_count}."""
+    # NOTE: xray-core's CLI registers this as `statsonline` (no underscore).
+    # The previous `stats_online` silently printed help and the regex below
+    # matched nothing — /devices always reported "online: 0".
     raw = await fly_api.ssh_exec(
-        "/usr/local/bin/xray api stats_online --server=127.0.0.1:10085 2>&1 || true"
+        "/usr/local/bin/xray api statsonline --server=127.0.0.1:10085 2>&1 || true"
     )
     out: dict[str, int] = {}
     # Output is one user per line: "user>>>email>>>online: N"
@@ -130,8 +133,15 @@ async def query_online() -> dict[str, int]:
 def _parse_stats(raw: str) -> dict[str, Any]:
     """Parse `xray api statsquery` output.
 
-    Output is JSON-ish. Modern xray emits a JSON object with .stat[] entries
-    like {"name":"user>>>foo@diyvpn>>>traffic>>>uplink","value":"1234"}.
+    Xray's statsquery emits **protobuf text format** by default, like:
+
+        stat: <
+          name: "user>>>foo@diyvpn>>>traffic>>>uplink"
+          value: 1234
+        >
+
+    Some builds / flags produce JSON. We handle both, then fall back to a
+    line-based `name: value` form.
     """
     raw = raw.strip()
     users: dict[str, dict[str, int]] = {}
@@ -139,7 +149,7 @@ def _parse_stats(raw: str) -> dict[str, Any]:
     if not raw:
         return {"users": users, "inbound": inbound}
 
-    # Try JSON first.
+    # 1) Try JSON first (some xray builds emit JSON when asked).
     try:
         data = json.loads(raw)
         for entry in data.get("stat", []):
@@ -150,7 +160,19 @@ def _parse_stats(raw: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    # Fall back to line parser: "user>>>foo@diyvpn>>>traffic>>>uplink: 1234"
+    # 2) Protobuf text format:  stat: < name: "..."  value: 1234 >
+    #    re.DOTALL so the regex can cross newlines within a single stat block.
+    pb_pairs = re.findall(
+        r'name:\s*"([^"]+)"[^}>]*?value:\s*(-?\d+)',
+        raw,
+        flags=re.DOTALL,
+    )
+    if pb_pairs:
+        for name, value in pb_pairs:
+            _bucket(name, int(value), users, inbound)
+        return {"users": users, "inbound": inbound}
+
+    # 3) Last resort: "user>>>foo@diyvpn>>>traffic>>>uplink: 1234"
     for line in raw.splitlines():
         m = re.match(r"(\S+):\s*(\d+)", line.strip())
         if m:

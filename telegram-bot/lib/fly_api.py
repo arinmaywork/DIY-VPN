@@ -158,12 +158,30 @@ async def flyctl(*args: str, timeout: float = 60.0) -> tuple[int, str, str]:
     return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
-async def ssh_exec(cmd: str, timeout: float = 30.0) -> str:
-    """Run a shell command on the VPN machine via `flyctl ssh console -C`."""
-    code, out, err = await flyctl(
-        "ssh", "console", "--app", APP, "-C", f"sh -c {shlex.quote(cmd)}",
-        timeout=timeout,
-    )
+async def ssh_exec(cmd: str, timeout: float = 60.0) -> str:
+    """Run a shell command on the VPN machine via `flyctl ssh console -C`.
+
+    Passes `--pty=false` to prevent flyctl from allocating a TTY (which hangs
+    indefinitely under asyncio.subprocess). Retries without the flag if the
+    local flyctl is old enough to not recognise it.
+    """
+    wrapped = f"sh -c {shlex.quote(cmd)}"
+    attempts = [
+        ("ssh", "console", "--app", APP, "--pty=false", "-C", wrapped),
+        ("ssh", "console", "--app", APP,                "-C", wrapped),
+    ]
+    code, out, err = 0, "", ""
+    for args in attempts:
+        try:
+            code, out, err = await flyctl(*args, timeout=timeout)
+        except asyncio.TimeoutError:
+            # Most likely a pty hang on older flyctl — try the next form.
+            code, out, err = 124, "", "ssh_exec: flyctl hung (possible pty issue)"
+            continue
+        # If flyctl rejected --pty=false as unknown, fall through to the
+        # no-flag form. Otherwise we're done.
+        if code == 0 or "unknown flag" not in err:
+            break
     if code != 0:
         raise RuntimeError(f"ssh failed (exit {code}): {err.strip() or out.strip()}")
     return out

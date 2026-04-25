@@ -1,0 +1,73 @@
+From: DIY-VPN audit
+Subject: [PATCH 02/05] fix(entrypoint): allow REALITY_DEST/SNI to be rotated via env
+
+B3. The previous entrypoint wrote REALITY_DEST and REALITY_SNI into
+/data/credentials.env on the first boot. On subsequent boots that file was
+sourced via `. "$CRED"`, which overwrote any env-supplied rotation.
+
+Result: the README's `flyctl secrets set REALITY_DEST=...` advice did
+nothing after the first deploy.
+
+This patch:
+ - stores ONLY the cryptographic material in credentials.env
+ - reads REALITY_DEST / REALITY_SNI from the environment on every boot,
+   using the value previously in credentials.env only as a seed default
+ - migrates existing volumes (strips the two lines from old files, keeps
+   the value as the default env)
+
+--- a/flyio/entrypoint.sh
++++ b/flyio/entrypoint.sh
+@@ -17,6 +17,18 @@ USERS=/data/users.json
+
+ mkdir -p /data "$CERT_DIR"
+
++#─── 0) Migrate old credentials.env that baked REALITY_DEST/SNI in ────────────
++# Prior versions persisted REALITY_DEST and REALITY_SNI, which then clobbered
++# any env-supplied rotation. Extract them into shell-local defaults and strip
++# them out so future boots always honour the environment.
++if [[ -f "$CRED" ]] && grep -qE '^(REALITY_DEST|REALITY_SNI)=' "$CRED"; then
++  OLD_DEST="$(awk -F= '$1=="REALITY_DEST"{print $2; exit}' "$CRED" || true)"
++  OLD_SNI="$(awk -F= '$1=="REALITY_SNI"{print $2; exit}'  "$CRED" || true)"
++  : "${REALITY_DEST:=${OLD_DEST}}"
++  : "${REALITY_SNI:=${OLD_SNI}}"
++  sed -i -E '/^REALITY_(DEST|SNI)=/d' "$CRED"
++fi
++
+ #─── 1) Generate credentials once, persist on /data volume ────────────────────
+ if [[ ! -f "$CRED" ]]; then
+   echo "[*] First boot: generating fresh credentials..."
+@@ -31,27 +43,27 @@ if [[ ! -f "$CRED" ]]; then
+   REALITY_PRIVATE_KEY="$(echo "$KP" | awk '/Private/ {print $NF; exit}')"
+   REALITY_PUBLIC_KEY="$(echo "$KP" | awk '/Public/  {print $NF; exit}')"
+
+-  # Defaults — can be overridden by env vars from fly.toml or `flyctl secrets set`
+-  REALITY_DEST="${REALITY_DEST:-www.microsoft.com}"
+-  REALITY_SNI="${REALITY_SNI:-$REALITY_DEST}"
+-
++  # NOTE: REALITY_DEST / REALITY_SNI are NOT persisted here — they're
++  # read from the environment on every boot (see below) so `flyctl secrets
++  # set REALITY_DEST=…` works across restarts.
+   cat > "$CRED" <<EOF
+ UUID=${UUID}
+ REALITY_PRIVATE_KEY=${REALITY_PRIVATE_KEY}
+ REALITY_PUBLIC_KEY=${REALITY_PUBLIC_KEY}
+ REALITY_SHORT_ID=${SHORT_ID}
+-REALITY_DEST=${REALITY_DEST}
+-REALITY_SNI=${REALITY_SNI}
+ HY2_PASSWORD=${HY2_PASSWORD}
+ HY2_OBFS_PASSWORD=${HY2_OBFS_PASSWORD}
+ EOF
+   chmod 600 "$CRED"
+   echo "[OK] Credentials generated and saved to $CRED"
+ fi
+
+ # Load credentials
+ set -a
+ # shellcheck source=/dev/null
+ . "$CRED"
+ set +a
++
++# Reality target/SNI: env wins, with a sensible default. Never stored.
++export REALITY_DEST="${REALITY_DEST:-www.microsoft.com}"
++export REALITY_SNI="${REALITY_SNI:-$REALITY_DEST}"
++echo "[*] Reality target: ${REALITY_DEST} (SNI: ${REALITY_SNI})"

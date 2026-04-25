@@ -13,6 +13,19 @@ USERS=/data/users.json
 
 mkdir -p /data "$CERT_DIR"
 
+#─── 0) Migrate old credentials.env that baked REALITY_DEST/SNI in ────────────
+# Prior versions persisted REALITY_DEST and REALITY_SNI, which then clobbered
+# any env-supplied rotation (flyctl secrets set REALITY_DEST=... had no effect
+# after first boot). Seed env from the old file, then strip those lines.
+if [[ -f "$CRED" ]] && grep -qE '^(REALITY_DEST|REALITY_SNI)=' "$CRED"; then
+  OLD_DEST="$(awk -F= '$1=="REALITY_DEST"{print $2; exit}' "$CRED" 2>/dev/null || true)"
+  OLD_SNI="$(awk -F= '$1=="REALITY_SNI"{print $2; exit}'  "$CRED" 2>/dev/null || true)"
+  : "${REALITY_DEST:=${OLD_DEST}}"
+  : "${REALITY_SNI:=${OLD_SNI}}"
+  sed -i.bak -E '/^REALITY_(DEST|SNI)=/d' "$CRED" && rm -f "${CRED}.bak"
+  echo "[*] Migrated credentials.env (REALITY_DEST/SNI now env-driven)"
+fi
+
 #─── 1) Generate credentials once, persist on /data volume ────────────────────
 if [[ ! -f "$CRED" ]]; then
   echo "[*] First boot: generating fresh credentials..."
@@ -20,24 +33,20 @@ if [[ ! -f "$CRED" ]]; then
   UUID="$(cat /proc/sys/kernel/random/uuid)"
   HY2_PASSWORD="$(openssl rand -base64 24 | tr -d '+/=' | head -c 32)"
   HY2_OBFS_PASSWORD="$(openssl rand -base64 24 | tr -d '+/=' | head -c 32)"
-  SHORT_ID="$(openssl rand -hex 4)"
+  SHORT_ID="$(openssl rand -hex 8)"   # 16 hex chars (8 bytes entropy)
 
   # Reality X25519 keypair via xray
   KP="$(/usr/local/bin/xray x25519)"
   REALITY_PRIVATE_KEY="$(echo "$KP" | awk '/Private/ {print $NF; exit}')"
   REALITY_PUBLIC_KEY="$(echo "$KP" | awk '/Public/  {print $NF; exit}')"
 
-  # Defaults — can be overridden by env vars from fly.toml or `flyctl secrets set`
-  REALITY_DEST="${REALITY_DEST:-www.microsoft.com}"
-  REALITY_SNI="${REALITY_SNI:-$REALITY_DEST}"
-
+  # NOTE: REALITY_DEST / REALITY_SNI are deliberately NOT persisted — they
+  # come from env on every boot so `flyctl secrets set REALITY_DEST=…` works.
   cat > "$CRED" <<EOF
 UUID=${UUID}
 REALITY_PRIVATE_KEY=${REALITY_PRIVATE_KEY}
 REALITY_PUBLIC_KEY=${REALITY_PUBLIC_KEY}
 REALITY_SHORT_ID=${SHORT_ID}
-REALITY_DEST=${REALITY_DEST}
-REALITY_SNI=${REALITY_SNI}
 HY2_PASSWORD=${HY2_PASSWORD}
 HY2_OBFS_PASSWORD=${HY2_OBFS_PASSWORD}
 EOF
@@ -50,6 +59,11 @@ set -a
 # shellcheck source=/dev/null
 . "$CRED"
 set +a
+
+# Reality target/SNI: env wins, with a sensible default. Never persisted.
+export REALITY_DEST="${REALITY_DEST:-www.microsoft.com}"
+export REALITY_SNI="${REALITY_SNI:-$REALITY_DEST}"
+echo "[*] Reality target: ${REALITY_DEST} (SNI: ${REALITY_SNI})"
 
 #─── 1b) Seed users.json on first boot (single user "default" = the master UUID)
 # The Telegram bot edits this file via flyctl ssh to add/remove device-specific
@@ -178,17 +192,34 @@ HY_PID=$!
 
 # Forward SIGTERM cleanly
 shutdown() {
-  echo "[*] Caught signal, stopping..."
+  echo "[*] Caught signal, stopping xray + hysteria..."
   kill -TERM "$XRAY_PID" "$HY_PID" 2>/dev/null || true
   wait "$XRAY_PID" "$HY_PID" 2>/dev/null || true
   exit 0
 }
 trap shutdown SIGTERM SIGINT
 
-# Wait for either child to exit
+# Wait for either child to exit. Disable errexit across the wait so a
+# non-zero child exit doesn't short-circuit the cleanup below.
+set +e
 wait -n
 EXIT=$?
-echo "[!] One process exited with code $EXIT -- terminating the other."
+set -e
+
+# Identify which one went first, for clearer Fly logs.
+if ! kill -0 "$XRAY_PID" 2>/dev/null; then
+  echo "[!] xray exited (code $EXIT). Terminating hysteria..."
+elif ! kill -0 "$HY_PID" 2>/dev/null; then
+  echo "[!] hysteria exited (code $EXIT). Terminating xray..."
+else
+  echo "[!] child exited (code $EXIT); killing the sibling..."
+fi
+
 kill -TERM "$XRAY_PID" "$HY_PID" 2>/dev/null || true
-wait 2>/dev/null || true
+# Give the sibling up to 5s to close conns gracefully.
+for _ in 1 2 3 4 5; do
+  kill -0 "$XRAY_PID" 2>/dev/null || kill -0 "$HY_PID" 2>/dev/null || break
+  sleep 1
+done
+kill -KILL "$XRAY_PID" "$HY_PID" 2>/dev/null || true
 exit "$EXIT"

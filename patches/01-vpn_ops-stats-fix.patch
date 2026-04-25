@@ -1,0 +1,97 @@
+From: DIY-VPN audit
+Subject: [PATCH 01/05] fix(vpn_ops): correct xray stats commands + parse protobuf-text
+
+Two silent failures in /devices:
+  B1. `xray api stats_online` should be `statsonline` (no underscore).
+      The wrong name returns a help blurb; the online counter was always 0.
+  B2. `xray api statsquery` emits protobuf text format by default, not JSON.
+      The existing parser always fell through to an empty dict.
+
+Fixes: /devices now shows accurate per-user online + traffic counters.
+
+--- a/telegram-bot/lib/vpn_ops.py
++++ b/telegram-bot/lib/vpn_ops.py
+@@ -100,26 +100,26 @@ async def reload_xray() -> None:
+ # ─── Stats via xray API (queryStats) ─────────────────────────────────────────
+
+
+ async def query_stats() -> dict[str, Any]:
+     """Returns dict: { 'users': {email: {uplink, downlink, online}}, 'inbound': {...} }.
+
+     Calls `xray api statsquery --server 127.0.0.1:10085` inside the container.
+     """
+     raw = await fly_api.ssh_exec(
+-        "/usr/local/bin/xray api statsquery --server=127.0.0.1:10085 -reset=false 2>&1 || true"
++        "/usr/local/bin/xray api statsquery --server=127.0.0.1:10085 --reset=false 2>&1 || true"
+     )
+     return _parse_stats(raw)
+
+
+ async def query_online() -> dict[str, int]:
+     """Returns {email: online_session_count}."""
+     raw = await fly_api.ssh_exec(
+-        "/usr/local/bin/xray api stats_online --server=127.0.0.1:10085 2>&1 || true"
++        "/usr/local/bin/xray api statsonline --server=127.0.0.1:10085 2>&1 || true"
+     )
+     out: dict[str, int] = {}
+     # Output is one user per line: "user>>>email>>>online: N"
+     for line in raw.splitlines():
+         m = re.match(r"user>>>([^>]+)>>>online:\s*(\d+)", line.strip())
+         if m:
+             out[m.group(1)] = int(m.group(2))
+     return out
+
+@@ -127,36 +127,58 @@ async def query_online() -> dict[str, int]:
+ def _parse_stats(raw: str) -> dict[str, Any]:
+     """Parse `xray api statsquery` output.
+
+-    Output is JSON-ish. Modern xray emits a JSON object with .stat[] entries
+-    like {"name":"user>>>foo@diyvpn>>>traffic>>>uplink","value":"1234"}.
++    Xray's statsquery emits **protobuf text format** by default, like:
++
++        stat: <
++          name: "user>>>foo@diyvpn>>>traffic>>>uplink"
++          value: 1234
++        >
++
++    Some builds / flags produce JSON. We handle both, and fall back to a
++    line-based `name: value` form.
+     """
+     raw = raw.strip()
+     users: dict[str, dict[str, int]] = {}
+     inbound: dict[str, dict[str, int]] = {}
+     if not raw:
+         return {"users": users, "inbound": inbound}
+
+-    # Try JSON first.
++    # 1) Try JSON first (some xray builds emit JSON when asked).
+     try:
+         data = json.loads(raw)
+         for entry in data.get("stat", []):
+             name = entry.get("name", "")
+             value = int(entry.get("value", 0) or 0)
+             _bucket(name, value, users, inbound)
+         return {"users": users, "inbound": inbound}
+     except json.JSONDecodeError:
+         pass
+
+-    # Fall back to line parser: "user>>>foo@diyvpn>>>traffic>>>uplink: 1234"
++    # 2) Protobuf text format:  stat: < name: "..."  value: 1234 >
++    #    Match pairs of (quoted name, numeric value) regardless of spacing.
++    #    re.DOTALL handles the multi-line "stat: <...>" blocks.
++    pb_pairs = re.findall(
++        r'name:\s*"([^"]+)"[^}>]*?value:\s*(-?\d+)',
++        raw,
++        flags=re.DOTALL,
++    )
++    if pb_pairs:
++        for name, value in pb_pairs:
++            _bucket(name, int(value), users, inbound)
++        return {"users": users, "inbound": inbound}
++
++    # 3) Last-resort: "user>>>foo@diyvpn>>>traffic>>>uplink: 1234"
+     for line in raw.splitlines():
+         m = re.match(r"(\S+):\s*(\d+)", line.strip())
+         if m:
+             _bucket(m.group(1), int(m.group(2)), users, inbound)
+     return {"users": users, "inbound": inbound}

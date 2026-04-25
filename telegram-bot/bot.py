@@ -39,6 +39,35 @@ log = logging.getLogger("diyvpn-bot")
 APP_NAME = os.environ["DIYVPN_APP_NAME"]
 
 
+# ─── Telegram text helpers ───────────────────────────────────────────────────
+
+TELEGRAM_MSG_LIMIT = 4000  # 96-char headroom under Telegram's 4096 hard cap
+
+
+def chunk_for_telegram(text: str, limit: int = TELEGRAM_MSG_LIMIT) -> list[str]:
+    """Split `text` on newlines so each chunk is <= `limit` chars.
+
+    Line-aware so we don't split a Markdown code span mid-backtick (which
+    would unbalance the next chunk and render as literal text).
+    """
+    chunks: list[str] = []
+    buf = ""
+    for line in text.splitlines(keepends=True):
+        if len(buf) + len(line) > limit and buf:
+            chunks.append(buf)
+            buf = ""
+        if len(line) > limit:
+            # Single line longer than limit — hard-split as a last resort.
+            for i in range(0, len(line), limit):
+                chunks.append(line[i:i + limit])
+            buf = ""
+            continue
+        buf += line
+    if buf:
+        chunks.append(buf)
+    return chunks or [text]
+
+
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 
@@ -288,10 +317,8 @@ async def cmd_links(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         chunks.append(f"\n*{label} — VLESS Reality:*\n`{v}`")
         chunks.append(f"\n*{label} — Hysteria2:*\n`{h}`")
     text = "\n".join(chunks)
-    # Telegram caps single messages at 4096 chars; split if needed.
-    while text:
-        await update.message.reply_text(text[:4000], parse_mode=ParseMode.MARKDOWN)
-        text = text[4000:]
+    for piece in chunk_for_telegram(text):
+        await update.message.reply_text(piece, parse_mode=ParseMode.MARKDOWN)
 
 
 @authed
@@ -497,9 +524,8 @@ async def cmd_logs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not out.strip():
         out = "(no log lines)"
-    # Telegram caps messages at 4096 chars.
-    chunks = [out[i:i + 3500] for i in range(0, len(out), 3500)] or [out]
-    for ch in chunks:
+    # Line-aware chunking so Markdown code fences don't get broken.
+    for ch in chunk_for_telegram(out, limit=3900):
         await update.message.reply_text(f"```\n{ch}\n```", parse_mode=ParseMode.MARKDOWN)
 
 

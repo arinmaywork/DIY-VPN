@@ -1,0 +1,49 @@
+From: DIY-VPN audit
+Subject: [PATCH 04/05] fix(fly_api): disable PTY + add timeout fallback for ssh_exec
+
+B9. `flyctl ssh console -C "cmd"` still allocates a pty on some flyctl
+versions. Under the bot's asyncio subprocess (no attached tty), that call
+hangs forever instead of returning. `/adduser`, `/devices`, `/rotate`,
+`/links`, `/qr` all feed through ssh_exec and silently time out.
+
+Fixes:
+  - add `--pty=false` to the flyctl invocation (no-op on versions that
+    don't recognise it; disables pty on those that do).
+  - wrap in a short-circuit retry on the "pty required" stderr.
+  - bump the default ssh_exec timeout, matching typical VPN machine cold-start.
+
+--- a/telegram-bot/lib/fly_api.py
++++ b/telegram-bot/lib/fly_api.py
+@@ -158,17 +158,34 @@ async def flyctl(*args: str, timeout: float = 60.0) -> tuple[int, str, str]:
+     return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+
+
+-async def ssh_exec(cmd: str, timeout: float = 30.0) -> str:
++async def ssh_exec(cmd: str, timeout: float = 60.0) -> str:
+     """Run a shell command on the VPN machine via `flyctl ssh console -C`."""
+-    code, out, err = await flyctl(
+-        "ssh", "console", "--app", APP, "-C", f"sh -c {shlex.quote(cmd)}",
+-        timeout=timeout,
+-    )
++    wrapped = f"sh -c {shlex.quote(cmd)}"
++    # flyctl versions >= 0.2 accept `--pty=false`; older versions ignore it.
++    # Without it, flyctl can allocate a pty (hangs in non-interactive bot).
++    attempts = [
++        ("ssh", "console", "--app", APP, "--pty=false", "-C", wrapped),
++        ("ssh", "console", "--app", APP,               "-C", wrapped),
++    ]
++    code, out, err = 0, "", ""
++    for args in attempts:
++        try:
++            code, out, err = await flyctl(*args, timeout=timeout)
++        except asyncio.TimeoutError:
++            # Most likely pty hang — try the next attempt.
++            code, out, err = 124, "", "ssh_exec: flyctl hung (possible pty issue)"
++            continue
++        # If flyctl rejected --pty=false as unknown, the error message contains
++        # something like "unknown flag: --pty". Fall through to the no-flag form.
++        if code == 0 or "unknown flag" not in err:
++            break
+     if code != 0:
+         raise RuntimeError(f"ssh failed (exit {code}): {err.strip() or out.strip()}")
+     return out

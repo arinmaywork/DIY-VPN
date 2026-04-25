@@ -1,0 +1,61 @@
+From: DIY-VPN audit
+Subject: [PATCH 03/05] fix(entrypoint): make child-process cleanup robust under set -e
+
+B8. Under `set -euo pipefail`, a failing `wait -n` would short-circuit the
+script before the sibling-kill block could run. Practical impact: the
+surviving daemon lingered until Fly's SIGKILL, wasting CPU during the
+unhealthy window.
+
+Also adds kill_timeout guidance and a tiny stderr message distinguishing
+"xray died" vs "hysteria died".
+
+--- a/flyio/entrypoint.sh
++++ b/flyio/entrypoint.sh
+@@ -119,24 +119,38 @@ echo "[*] Starting xray and hysteria..."
+ /usr/local/bin/xray run -c /etc/xray/config.json &
+ XRAY_PID=$!
+
+ /usr/local/bin/hysteria server -c /etc/hysteria/config.yaml &
+ HY_PID=$!
+
+ # Forward SIGTERM cleanly
+ shutdown() {
+-  echo "[*] Caught signal, stopping..."
++  echo "[*] Caught signal, stopping xray + hysteria..."
+   kill -TERM "$XRAY_PID" "$HY_PID" 2>/dev/null || true
+   wait "$XRAY_PID" "$HY_PID" 2>/dev/null || true
+   exit 0
+ }
+ trap shutdown SIGTERM SIGINT
+
+-# Wait for either child to exit
+-wait -n
+-EXIT=$?
+-echo "[!] One process exited with code $EXIT -- terminating the other."
+-kill -TERM "$XRAY_PID" "$HY_PID" 2>/dev/null || true
+-wait 2>/dev/null || true
+-exit "$EXIT"
++# Wait for either child to exit. We disable `errexit` across the wait so a
++# non-zero child exit code doesn't short-circuit the cleanup below.
++set +e
++wait -n
++EXIT=$?
++set -e
++
++# Identify which one went first, for clearer Fly logs.
++if ! kill -0 "$XRAY_PID" 2>/dev/null; then
++  echo "[!] xray exited (code $EXIT). Terminating hysteria..."
++elif ! kill -0 "$HY_PID" 2>/dev/null; then
++  echo "[!] hysteria exited (code $EXIT). Terminating xray..."
++else
++  echo "[!] child exited (code $EXIT); killing the sibling..."
++fi
++
++kill -TERM "$XRAY_PID" "$HY_PID" 2>/dev/null || true
++# Give the sibling up to 5s to close QUIC/TCP conns gracefully.
++for _ in 1 2 3 4 5; do
++  kill -0 "$XRAY_PID" 2>/dev/null || kill -0 "$HY_PID" 2>/dev/null || break
++  sleep 1
++done
++kill -KILL "$XRAY_PID" "$HY_PID" 2>/dev/null || true
++exit "$EXIT"

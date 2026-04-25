@@ -1,0 +1,82 @@
+From: DIY-VPN audit
+Subject: [PATCH 05/05] fix(bot): split long replies on newlines, not char count
+
+B12. `cmd_links` and `cmd_logs` chunked at arbitrary character boundaries,
+which could split a Markdown code span mid-backtick. The next chunk then
+has unbalanced backticks and Telegram renders the whole thing as literal
+text.
+
+Replace with a line-aware splitter that packs as many whole lines as will
+fit under Telegram's 4096-char limit.
+
+--- a/telegram-bot/bot.py
++++ b/telegram-bot/bot.py
+@@ -31,6 +31,24 @@ from lib.qr import qr_png
+
+ logging.basicConfig(
+     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+     level=os.environ.get("TG_LOGLEVEL", "INFO"),
+ )
+ log = logging.getLogger("diyvpn-bot")
+
+ APP_NAME = os.environ["DIYVPN_APP_NAME"]
+
+
++# ─── Telegram text helpers ───────────────────────────────────────────────────
++
++TELEGRAM_MSG_LIMIT = 4000  # leave 96 chars of headroom under the 4096 hard cap
++
++
++def chunk_for_telegram(text: str, limit: int = TELEGRAM_MSG_LIMIT) -> list[str]:
++    """Split `text` on newlines so each chunk is <= `limit` chars.
++    Prevents splitting Markdown code spans mid-backtick.
++    """
++    chunks: list[str] = []
++    buf = ""
++    for line in text.splitlines(keepends=True):
++        if len(buf) + len(line) > limit and buf:
++            chunks.append(buf)
++            buf = ""
++        if len(line) > limit:
++            # A single line is too long — hard-split as last resort.
++            for i in range(0, len(line), limit):
++                chunks.append(line[i:i + limit])
++            buf = ""
++            continue
++        buf += line
++    if buf:
++        chunks.append(buf)
++    return chunks or [text]
++
++
+ # ─── Helpers ─────────────────────────────────────────────────────────────────
+@@ -280,13 +298,12 @@ async def cmd_links(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+             parse_mode=ParseMode.MARKDOWN,
+         )
+         return
+     chunks = [f"*Share links for `{name}`:*"]
+     for label, v, h in links:
+         chunks.append(f"\n*{label} — VLESS Reality:*\n`{v}`")
+         chunks.append(f"\n*{label} — Hysteria2:*\n`{h}`")
+     text = "\n".join(chunks)
+-    # Telegram caps single messages at 4096 chars; split if needed.
+-    while text:
+-        await update.message.reply_text(text[:4000], parse_mode=ParseMode.MARKDOWN)
+-        text = text[4000:]
++    for piece in chunk_for_telegram(text):
++        await update.message.reply_text(piece, parse_mode=ParseMode.MARKDOWN)
+
+@@ -497,13 +514,12 @@ async def cmd_logs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+     try:
+         out = await fly_api.fetch_logs(50)
+     except Exception as e:
+         await update.message.reply_text(f"Failed: {e}")
+         return
+     if not out.strip():
+         out = "(no log lines)"
+-    # Telegram caps messages at 4096 chars.
+-    chunks = [out[i:i + 3500] for i in range(0, len(out), 3500)] or [out]
+-    for ch in chunks:
++    # Wrap the whole thing in ``` and split on line boundaries.
++    for ch in chunk_for_telegram(out, limit=3900):
+         await update.message.reply_text(f"```\n{ch}\n```", parse_mode=ParseMode.MARKDOWN)
