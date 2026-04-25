@@ -1,159 +1,121 @@
 # DIY-VPN Telegram Bot
 
-Control your Fly.io-hosted DIY-VPN from any device — start/stop the machine,
-fetch QR codes, manage IPv4, list connected devices, add/kick clients — all
-from a Telegram chat.
-
-> **Looking for the full reference?** See [../docs/07-TELEGRAM-BOT.md](../docs/07-TELEGRAM-BOT.md)
-> for the complete command table, how the internals work, and operating notes.
-> This file is the quick-start.
+Control your Oracle-hosted DIY-VPN from Telegram — list devices, add/kick
+clients, hand out QR codes, hand out time-limited access, view live traffic
+stats, see service health.
 
 ## Architecture
 
 ```
-┌──────────────────┐  Telegram Bot API   ┌─────────────────────┐
-│  You (Telegram)  │ ───────────────────►│  Bot machine        │
-│                  │ ◄─────────────────── │  (this repo)        │
-└──────────────────┘                     │  - python-tg-bot     │
-                                         │  - flyctl            │
-                                         └──────────┬───────────┘
-                                                    │ Fly Machines API
-                                                    │ + flyctl ssh exec
-                                                    ▼
-                                         ┌─────────────────────┐
-                                         │  VPN machine        │
-                                         │  (../flyio/)        │
-                                         │  - Xray + Hysteria2  │
-                                         └─────────────────────┘
+┌──────────────────┐  Telegram Bot API   ┌────────────────────┐    ssh    ┌────────────────────┐
+│  You (Telegram)  │ ───────────────────►│  Bot host          │ ────────► │  VPN box           │
+│                  │ ◄─────────────────── │  (sentistack VM)   │ ◄──────── │  (Oracle Cloud)    │
+└──────────────────┘                     │  - python-tg-bot    │  exit 0   │  - Hysteria2 :443  │
+                                         │  - openssh-client   │           │  - Xray-Reality    │
+                                         └────────────────────┘            │  - diyvpn-auth     │
+                                                                           └────────────────────┘
 ```
 
-The bot runs on its own tiny Fly app (separate from the VPN), so when you
-`/down` the VPN machine to save money, the bot stays alive to `/up` it later.
+The bot doesn't touch protocol internals. It SSHes into the VPN box,
+edits `/data/users.json`, and runs `sudo /usr/local/bin/diyvpn-render` —
+that script re-renders Hy2 + Xray configs and restarts only what changed.
 
 ## Cost
 
-The bot is one `shared-cpu-1x@256mb` machine with no volumes and no
-allocated IPs (it polls Telegram outbound, no inbound traffic). At the
-time of writing that's roughly **$1.94/month**, fully covered by Fly's
-$5 included credit alongside the VPN itself.
+Free. Bot host is your own VM (sentistack); VPN box is Oracle Always Free.
 
-## Prerequisites
+## Required env vars
 
-1. The DIY-VPN itself is already deployed (you have an app like `diyvpn-sgad`)
-2. `flyctl` installed and logged in
-3. `jq` installed
-4. A Telegram bot created via [@BotFather](https://t.me/BotFather)
-5. Your Telegram user ID (use [@userinfobot](https://t.me/userinfobot))
+| Var | What |
+|---|---|
+| `TG_BOT_TOKEN` | from @BotFather |
+| `TG_ALLOWED_USERS` | comma-separated Telegram user IDs |
+| `VPN_HOST` | public IPv4 of the VPN box |
 
-## One-shot deploy
+## Optional env vars
+
+| Var | Default |
+|---|---|
+| `VPN_SSH_USER` | `ubuntu` |
+| `VPN_SSH_KEY_PATH` | `~/.ssh/diyvpn-oracle` |
+| `VPN_SSH_PORT` | `22` |
+| `VPN_SSH_KNOWN_HOSTS` | `~/.ssh/known_hosts` |
+| `TG_LOGLEVEL` | `INFO` |
+
+## Prereqs on the bot host
+
+- Python 3.10+ and `pip`
+- `openssh-client` (Ubuntu: `apt install openssh-client`)
+- A working SSH key + connectivity to `ubuntu@VPN_HOST` (test with `ssh -i $VPN_SSH_KEY_PATH ubuntu@VPN_HOST true`)
+
+## Deploy
 
 ```bash
 cd telegram-bot/
-VPN_APP_NAME=diyvpn-sgad ./deploy.sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# Stash creds
+cat > .env <<EOF
+TG_BOT_TOKEN=...
+TG_ALLOWED_USERS=...
+VPN_HOST=40.233.120.150
+VPN_SSH_KEY_PATH=$HOME/.ssh/diyvpn-oracle
+EOF
+
+# Start
+set -a; source .env; set +a
+.venv/bin/python bot.py
 ```
 
-The script will:
-
-1. Prompt for your bot token + Telegram user ID(s)
-2. Create a new Fly app (`<vpn-app>-bot` by default)
-3. Mint a 1-year Fly API token scoped to your org
-4. Stage all three secrets (`TG_BOT_TOKEN`, `TG_ALLOWED_USERS`, `FLY_API_TOKEN`)
-5. Build + deploy the bot container
-6. Print where to view logs
-
-Then open Telegram, find your bot, send `/start`. If it replies, send `/help`
-for the full command list.
+For long-running, use the systemd unit in `systemd/diyvpn-bot.service`.
 
 ## Commands
 
-### VPN power
-- `/status` — machine state, IPs, region
-- `/up` — start the VPN machine
-- `/down` — stop the VPN machine (saves $)
-- `/restart` — restart the machine
+### Share links & QR
+- `/links [name]` — vless:// + hysteria2:// for the named user (default: `default`)
+- `/qr [name]` — send the QR codes
 
-### Share links & QR codes
-- `/links` — paste-able vless:// + hysteria2:// URIs (text)
-- `/qr` — sends QR codes for VLESS + Hysteria2 (one image per IP × per protocol)
-- `/links iphone` / `/qr iphone` — for a specific named device
+### Devices
+- `/devices` — list users + traffic + online + priority + expiry
+- `/adduser <name> [priority]` — add permanent device (priority: `high|normal|low`, default `normal`)
+- `/temp <name> <hours> [priority]` — time-limited device
+- `/priority <name> <high|normal|low>` — change priority tier
+- `/kick <name>` — remove a device
+- `/rotate <name>` — regenerate one user's UUID + Hy2 password
+- `/rotate all yes` — nuke everything (kicks all clients, regenerates Reality keys)
 
-### IPv4 management
-- `/ipv4` — show current IPs
-- `/ipv4_add` — allocate a dedicated IPv4 ($2/mo)
-- `/ipv4_release` — release dedicated IPv4
+### Server health
+- `/status` — services + listening sockets
+- `/logs <auth|hysteria|xray>` — last 30 journalctl lines
 
-### Devices / users
-- `/devices` — list configured users with traffic + online session counts
-- `/adduser <name>` — provision a new device (e.g. `/adduser iphone`); use
-  `/qr iphone` afterwards to get its share-links
-- `/kick <name>` — remove a device (you can't remove the last one)
-- `/rotate yes` — wipe ALL credentials and regenerate (kicks every device)
+### Setup helpers
+- `/apps` — recommended client per platform
+- `/setup <ios|android|windows|macos|linux>` — step-by-step
 
 ### Misc
-- `/logs` — last 50 lines of VPN logs
-- `/whoami` — show your Telegram user ID
+- `/whoami` — your Telegram ID
 - `/help` — full command list
 
-## Updating the allowlist
+## How priorities work
 
-```bash
-flyctl secrets set --app <vpn-app>-bot TG_ALLOWED_USERS="111,222,333"
-```
+Each user gets an xray policy `level` (high=2, normal=0, low=1). Right now
+all three levels enable per-user stats; priority is just a tag for your own
+bookkeeping until you wire QoS rules into the routing.
 
-The bot machine will restart automatically.
+## How `/temp` works
 
-## Updating the bot itself
-
-```bash
-cd telegram-bot/
-flyctl deploy --app <vpn-app>-bot --config fly.toml
-```
-
-## Tearing it down
-
-```bash
-flyctl apps destroy <vpn-app>-bot --yes
-```
-
-The VPN itself is untouched.
-
-## How `/devices` works
-
-The VPN's Xray config exposes a stats API on `127.0.0.1:10085` (localhost
-inside the container only — never reachable from outside). The bot SSHes
-into the VPN container via `flyctl ssh console -C "xray api ..."` to query:
-
-- per-user uplink/downlink bytes
-- per-user online session counts
-
-If you call `/devices` while the VPN is stopped, you'll just see the
-configured user list (no live stats).
-
-## How `/adduser` works
-
-User entries live in `/data/users.json` on the VPN's persistent volume:
-
-```json
-[
-  {"name": "default", "uuid": "...", "flow": "xtls-rprx-vision", "email": "default@diyvpn"},
-  {"name": "iphone",  "uuid": "...", "flow": "xtls-rprx-vision", "email": "iphone@diyvpn"}
-]
-```
-
-The bot edits this file via `flyctl ssh`, then triggers a machine restart.
-The VPN's `entrypoint.sh` re-renders the Xray config from `users.json` on
-every boot, so the new user is live within ~10 seconds.
+`/temp` sets `expires_at` (Unix timestamp) on the user. The Hy2 auth backend
+checks `expires_at` on every connect and returns `{ok:false}` once expired.
+Xray-Reality doesn't enforce expiry on its own — you need to also `/kick`
+the user to remove the UUID from xray's accept list. (TODO: wire a cron
+that auto-kicks expired users.)
 
 ## Security notes
 
-- `TG_BOT_TOKEN` and `FLY_API_TOKEN` are stored as Fly secrets — encrypted
-  at rest and only injected into the running machine's environment. Not
-  visible in the image, the repo, or `flyctl status`.
-- Only the Telegram user IDs in `TG_ALLOWED_USERS` can run any command;
-  everyone else gets a polite refusal that exposes only their own ID.
-- The bot has full control over your Fly org (org-scoped token). If you'd
-  rather narrow it to just the two apps, replace step 2 of `deploy.sh`
-  with: `flyctl tokens create deploy --app <vpn-app>` and
-  `flyctl tokens create deploy --app <bot-app>` and combine them — but
-  you'll need to refresh them every time you want to allocate new IPs
-  on the VPN app.
+- The bot uses passwordless `sudo` over SSH — make sure your SSH key is
+  protected and only on the bot host.
+- `TG_ALLOWED_USERS` is the only auth in front of every command; if your
+  bot token leaks, anyone outside this allowlist still gets rejected.
+- All SSH calls use `BatchMode=yes` (no password prompts) and
+  `StrictHostKeyChecking=accept-new` (pin on first connect, fail on change).

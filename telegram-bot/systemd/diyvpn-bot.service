@@ -1,0 +1,24 @@
+[Unit]
+Description=DIY-VPN Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Customize these for your bot host:
+User=arinmay_work
+WorkingDirectory=/home/arinmay_work/DIY-VPN/telegram-bot
+EnvironmentFile=/home/arinmay_work/DIY-VPN/telegram-bot/.env
+ExecStart=/home/arinmay_work/DIY-VPN/telegram-bot/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/arinmay_work/DIY-VPN/telegram-bot
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

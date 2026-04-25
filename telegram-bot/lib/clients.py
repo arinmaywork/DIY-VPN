@@ -4,7 +4,8 @@ Kept in a separate module so you can edit/extend it without touching bot.py.
 
 If you find a better client for a given OS, just update the entry here.
 The only hard requirement: it must support BOTH VLESS+Reality (with
-xtls-rprx-vision flow) AND Hysteria2 with Salamander obfuscation.
+xtls-rprx-vision flow) AND Hysteria2 (no obfs — our deployment uses a
+self-signed cert + Bing masquerade for cover).
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ PLATFORMS: dict[str, dict] = {
             "vendor": "Bear Hill / techlaim",
             "store": "App Store (free)",
             "url": "https://apps.apple.com/app/v2box-v2ray-client/id6446814690",
-            "why": "Free, supports VLESS+Reality with Vision flow AND Hysteria2 with Salamander. No ads.",
+            "why": "Free, supports VLESS+Reality with Vision flow AND Hysteria2. No ads.",
         },
         "alternatives": [
             {"name": "Shadowrocket", "note": "$2.99, very polished, same protocol support.",
