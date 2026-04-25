@@ -57,14 +57,19 @@ async def read_users() -> list[dict[str, Any]]:
 
 
 async def write_users(users: list[dict[str, Any]]) -> None:
-    """Atomically replace /data/users.json with the given list, then re-render configs."""
+    """Atomically replace /data/users.json with the given list, then re-render configs.
+
+    The pipeline runs as `ubuntu`; only `install` (which writes to /data)
+    needs root, so sudo is applied inline rather than wrapping the whole
+    pipeline (which would only sudo the first stage).
+    """
     payload = json.dumps(users, indent=2)
     b64 = base64.b64encode(payload.encode()).decode()
     cmd = (
         f"echo {shlex.quote(b64)} | base64 -d | "
-        f"install -m 640 -g hysteria /dev/stdin /data/users.json"
+        f"sudo install -m 640 -g hysteria /dev/stdin /data/users.json"
     )
-    await server_api.sudo_exec(cmd)
+    await server_api.ssh_exec(cmd)
     await apply_changes()
 
 
@@ -217,9 +222,9 @@ async def rotate_all_credentials() -> None:
         f"REALITY_SHORT_ID={new_short_id}\n"
     )
     b64 = base64.b64encode(creds_env.encode()).decode()
-    await server_api.sudo_exec(
+    await server_api.ssh_exec(
         f"echo {shlex.quote(b64)} | base64 -d | "
-        f"install -m 640 -g hysteria /dev/stdin /data/credentials.env"
+        f"sudo install -m 640 -g hysteria /dev/stdin /data/credentials.env"
     )
 
     # Re-roll every user.
