@@ -28,7 +28,7 @@ DEBIAN_FRONTEND=noninteractive apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-aiohttp jq
 
 echo ">>> 2/7  /data dir + perms"
-install -d -m 750 /data
+install -d -m 750 -g hysteria /data 2>/dev/null || install -d -m 750 /data
 
 if [[ ! -f /data/credentials.env ]]; then
   echo ">>> 3/7  bootstrap /data/credentials.env from current xray + hysteria"
@@ -48,7 +48,8 @@ REALITY_PUBLIC_KEY=${REAL_PUB}
 REALITY_SNI=${REAL_SNI}
 REALITY_SHORT_ID=${REAL_SID}
 EOF
-  chmod 600 /data/credentials.env
+  chmod 640 /data/credentials.env
+  chgrp hysteria /data/credentials.env 2>/dev/null || true
 else
   echo ">>> 3/7  /data/credentials.env exists, leaving alone"
 fi
@@ -71,7 +72,8 @@ if [[ ! -f /data/users.json ]]; then
   }
 ]
 EOF
-  chmod 600 /data/users.json
+  chmod 640 /data/users.json
+  chgrp hysteria /data/users.json 2>/dev/null || true
 else
   echo ">>> 4/7  /data/users.json exists, leaving alone"
 fi
