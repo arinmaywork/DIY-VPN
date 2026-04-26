@@ -30,7 +30,7 @@ Free. Bot host is your own VM (sentistack); VPN box is Oracle Always Free.
 |---|---|
 | `TG_BOT_TOKEN` | from @BotFather |
 | `TG_ALLOWED_USERS` | comma-separated Telegram user IDs |
-| `VPN_HOST` | public IPv4 of the VPN box |
+| `VPN_BOXES` *(or `VPN_HOST`)* | csv of `name:ip` pairs, e.g. `toronto:40.233.120.150,london:1.2.3.4`. For a single box you can use `VPN_HOST=<ip>` instead — it's treated as one box named `default`. |
 
 ## Optional env vars
 
@@ -41,6 +41,10 @@ Free. Bot host is your own VM (sentistack); VPN box is Oracle Always Free.
 | `VPN_SSH_PORT` | `22` |
 | `VPN_SSH_KNOWN_HOSTS` | `~/.ssh/known_hosts` |
 | `TG_LOGLEVEL` | `INFO` |
+| `DIYVPN_BOT_STATE` | `<workdir>/.bot-state.json` (active-box selection persists here) |
+
+The bot assumes every box uses the same SSH user + key. If you need
+different keys per box, that's an easy refactor — open an issue.
 
 ## Prereqs on the bot host
 
@@ -55,13 +59,16 @@ cd telegram-bot/
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# Stash creds
+# Stash creds — multi-box example (preferred):
 cat > .env <<EOF
 TG_BOT_TOKEN=...
 TG_ALLOWED_USERS=...
-VPN_HOST=40.233.120.150
+VPN_BOXES=toronto:40.233.120.150,london:1.2.3.4
 VPN_SSH_KEY_PATH=$HOME/.ssh/diyvpn-oracle
 EOF
+
+# Single-box equivalent:
+#   VPN_HOST=40.233.120.150
 
 # Start
 set -a; source .env; set +a
@@ -72,9 +79,18 @@ For long-running, use the systemd unit in `systemd/diyvpn-bot.service`.
 
 ## Commands
 
+### Multi-box routing
+- `/boxes` — list every configured box, mark the active one
+- `/switch <name>` — set the active box. All subsequent commands target it.
+
+The bot operates on **one box at a time**. Each box has its own
+`/data/users.json`, so the same device name on two boxes will have
+different UUIDs and Hy2 passwords (intentional — a leak on box A
+doesn't compromise box B).
+
 ### Share links & QR
-- `/links [name]` — vless:// + hysteria2:// for the named user (default: `default`)
-- `/qr [name]` — send the QR codes
+- `/links [name]` — vless:// + hysteria2:// for the named user (default: `default`) on the active box
+- `/qr [name]` — send the QR codes for the active box
 
 ### Devices
 - `/devices` — list users + traffic + online + priority + expiry

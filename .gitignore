@@ -34,3 +34,8 @@ __pycache__/
 # Backup files
 *.bak
 *.orig
+
+# Bot runtime state (active-box selection, etc.)
+.bot-state.json
+telegram-bot/.bot-state.json
+telegram-bot/.bot-state.json.tmp

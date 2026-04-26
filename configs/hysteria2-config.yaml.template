@@ -17,13 +17,11 @@ auth:
   type: password
   password: __HY2_PASSWORD__
 
-# ───── Obfuscation (Salamander) ─────
-# Wraps QUIC packets in salsa20-based obfuscation so DPI can't fingerprint
-# the QUIC handshake. CRITICAL for China.
-obfs:
-  type: salamander
-  salamander:
-    password: __HY2_OBFS_PASSWORD__
+# ───── Obfuscation: disabled ─────
+# We rely on Bing masquerade (below) + cert CN=bing.com for cover. Salamander
+# wraps Hy2's UDP/443 in salsa20 — but it breaks the masquerade fall-through
+# (probes can't get a valid HTTP response from Bing because the obfs frame
+# rejects them first). Keep this off for streaming-grade reliability.
 
 # ───── Bandwidth (server-advertised; client BBR uses this as cap) ─────
 # Set to your VM's actual bandwidth. Oracle Always Free A1 has ~1 Gbps.

@@ -54,18 +54,15 @@ VLESS_URI+="#${VLESS_REMARK}"
 
 # ─── Hysteria2 URI ────────────────────────────────────────────────────────────
 # hysteria2://<password>@<host>:<port>/?
-#   obfs=salamander
-#   &obfs-password=<obfs-password>
-#   &sni=bing.com
+#   sni=www.bing.com
 #   &insecure=1
 #   #<remark>
+# No obfs — we rely on Bing masquerade + cert CN=bing.com for cover. Obfs
+# would break the masquerade fall-through (probes can't reach Bing).
 HY2_REMARK="$(urlencode "DIY-VPN Hysteria2 (${PUBLIC_IP})")"
 HY2_PWD_ENC="$(urlencode "${HY2_PASSWORD}")"
-HY2_OBFS_ENC="$(urlencode "${HY2_OBFS_PASSWORD}")"
 HY2_URI="hysteria2://${HY2_PWD_ENC}@${PUBLIC_IP}:${HY2_PORT}/"
-HY2_URI+="?obfs=salamander"
-HY2_URI+="&obfs-password=${HY2_OBFS_ENC}"
-HY2_URI+="&sni=bing.com"
+HY2_URI+="?sni=www.bing.com"
 HY2_URI+="&insecure=1"
 HY2_URI+="#${HY2_REMARK}"
 

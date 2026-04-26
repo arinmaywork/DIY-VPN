@@ -1,9 +1,13 @@
-"""DIY-VPN Telegram bot — control your Oracle Cloud VPN over SSH.
+"""DIY-VPN Telegram bot — control your Oracle Cloud VPN box(es) over SSH.
+
+Multi-box: every command targets the *active* box, switched via /switch.
 
 Required env vars:
   TG_BOT_TOKEN        — from @BotFather
   TG_ALLOWED_USERS    — comma-separated Telegram user IDs allowed to use the bot
-  VPN_HOST            — public IPv4 of the VPN box (e.g. "40.233.120.150")
+  VPN_BOXES           — multi-box: csv of "name:ip", e.g.
+                        "toronto:40.233.120.150,london:1.2.3.4"
+                        (or use VPN_HOST=<ip> for a single unnamed box)
 
 Optional:
   VPN_SSH_USER        — default "ubuntu"
@@ -88,11 +92,22 @@ async def _build_links_for_user(name: str = "default") -> tuple[str, str, dict]:
 # ─── /start, /help, /whoami ───────────────────────────────────────────────────
 
 
+def _box_summary() -> str:
+    active = server_api.active_box()
+    all_boxes = server_api.boxes()
+    if len(all_boxes) == 1:
+        return f"Box: `{active.name}` (`{active.host}`)"
+    others = ", ".join(f"`{b.name}`" for b in all_boxes if b.name != active.name)
+    return (
+        f"Active box: `{active.name}` (`{active.host}`)\n"
+        f"Other boxes: {others} — `/switch <name>` to change"
+    )
+
+
 @authed
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        f"DIY-VPN bot online. Controlling box `{server_api.host()}`.\n"
-        f"Send /help for the full command list.",
+        f"DIY-VPN bot online.\n{_box_summary()}\n\nSend /help for commands.",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -100,20 +115,24 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 @authed
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
-        "*Share links & QR*\n"
+        "*Boxes (multi-box routing)*\n"
+        "/boxes — list all configured boxes (active marked)\n"
+        "/switch `<name>` — set the active box for subsequent commands\n"
+        "\n"
+        "*Share links & QR* (active box only)\n"
         "/links `[name]` — share-link URIs (default user if no name)\n"
         "/qr `[name]` — QR codes for VLESS + Hy2\n"
         "\n"
-        "*Devices / users*\n"
+        "*Devices / users* (active box only)\n"
         "/devices — list users + traffic + online sessions + expiry\n"
         "/adduser `<name> [priority]` — add a permanent device\n"
         "/temp `<name> <hours> [priority]` — add a time-limited device\n"
         "/priority `<name> <high|normal|low>` — change priority tier\n"
         "/kick `<name>` — remove a device\n"
         "/rotate `<name>` — regenerate UUID + Hy2 password for one device\n"
-        "/rotate `all yes` — nuke everything (kicks all)\n"
+        "/rotate `all yes` — nuke everything (kicks all on active box)\n"
         "\n"
-        "*Server health*\n"
+        "*Server health* (active box only)\n"
         "/status — services + listening sockets\n"
         "/logs `<auth|hysteria|xray>` — last 30 journalctl lines\n"
         "\n"
@@ -123,7 +142,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "\n"
         "*Misc*\n"
         "/whoami — show your Telegram ID\n"
-        "/help — this message"
+        "/help — this message\n"
+        "\n"
+        f"_{_box_summary()}_"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
@@ -133,6 +154,44 @@ async def cmd_whoami(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     u = update.effective_user
     await update.message.reply_text(
         f"User ID: `{u.id}`\nName: {u.full_name}\nUsername: @{u.username or '-'}",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+# ─── Multi-box: list + switch ─────────────────────────────────────────────────
+
+
+@authed
+async def cmd_boxes(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    active = server_api.active_box()
+    lines = ["*Configured boxes:*"]
+    for b in server_api.boxes():
+        marker = "🟢 active" if b.name == active.name else "⚪"
+        lines.append(f"{marker}  `{b.name}` — `{b.host}`")
+    if len(server_api.boxes()) > 1:
+        lines.append("\nUse `/switch <name>` to change the active box.")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+@authed
+async def cmd_switch(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not ctx.args:
+        names = ", ".join(f"`{b.name}`" for b in server_api.boxes())
+        await update.message.reply_text(
+            f"Usage: `/switch <name>`\nKnown boxes: {names}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    name = ctx.args[0].strip()
+    try:
+        b = server_api.set_active(name)
+    except ValueError as e:
+        await update.message.reply_text(f"Failed: {e}")
+        return
+    log.info("active box switched to %s by %s", b.name, update.effective_user.id)
+    await update.message.reply_text(
+        f"Active box → `{b.name}` (`{b.host}`).\n"
+        f"All subsequent commands target this box until you `/switch` again.",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -423,8 +482,9 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"Failed: {e}")
         return
+    active = server_api.active_box()
     text = (
-        f"*Box:* `{server_api.host()}`\n"
+        f"*Box:* `{active.name}` (`{active.host}`)\n"
         f"\n*Services:*\n```\n{states.strip()}\n```"
         f"\n*Listening on key ports:*\n```\n{sockets.strip()}\n```"
     )
@@ -475,6 +535,8 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("whoami", cmd_whoami))
+    app.add_handler(CommandHandler("boxes", cmd_boxes))
+    app.add_handler(CommandHandler("switch", cmd_switch))
     app.add_handler(CommandHandler("links", cmd_links))
     app.add_handler(CommandHandler("qr", cmd_qr))
     app.add_handler(CommandHandler("devices", cmd_devices))
@@ -488,7 +550,14 @@ def main() -> None:
     app.add_handler(CommandHandler("apps", cmd_apps))
     app.add_handler(CommandHandler("setup", cmd_setup))
 
-    log.info("DIY-VPN bot starting (controlling host=%s)", server_api.host())
+    boxes = server_api.boxes()
+    active = server_api.active_box()
+    log.info(
+        "DIY-VPN bot starting | %d box(es): %s | active=%s",
+        len(boxes),
+        ",".join(f"{b.name}={b.host}" for b in boxes),
+        active.name,
+    )
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 

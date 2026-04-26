@@ -49,8 +49,9 @@ log "Generating credentials…"
 
 UUID="$(uuidgen)"
 HY2_PASSWORD="$(openssl rand -base64 24 | tr -d '+/=' | head -c 32)"
-HY2_OBFS_PASSWORD="$(openssl rand -base64 24 | tr -d '+/=' | head -c 32)"
 SHORT_ID="$(openssl rand -hex 4)"   # 8 hex chars
+# Note: Salamander obfuscation is NOT used. We rely on Bing masquerade + cert
+# CN=bing.com for cover. Obfs breaks the masquerade fall-through to Bing.
 
 # Reality "steal-from" target. Must be:
 #  - A real, popular HTTPS site
@@ -115,7 +116,6 @@ ok "Self-signed TLS cert created (CN=bing.com, valid 100 years)."
 log "Writing Hysteria2 config…"
 sed \
   -e "s|__HY2_PASSWORD__|${HY2_PASSWORD}|g" \
-  -e "s|__HY2_OBFS_PASSWORD__|${HY2_OBFS_PASSWORD}|g" \
   "$CONFIG_DIR/hysteria2-config.yaml.template" > /etc/hysteria/config.yaml
 chown hysteria:hysteria /etc/hysteria/config.yaml 2>/dev/null || true
 ok "Hysteria2 config written."
@@ -225,7 +225,6 @@ REALITY_SHORT_ID="${SHORT_ID}"
 REALITY_DEST="${REALITY_DEST}"
 REALITY_SNI="${REALITY_SNI}"
 HY2_PASSWORD="${HY2_PASSWORD}"
-HY2_OBFS_PASSWORD="${HY2_OBFS_PASSWORD}"
 HY2_PORT="443"
 REALITY_PORT="443"
 EOF
