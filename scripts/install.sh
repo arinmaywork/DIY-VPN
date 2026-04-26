@@ -90,7 +90,7 @@ sed \
   "$CONFIG_DIR/xray-config.json.template" > /usr/local/etc/xray/config.json
 
 # Validate
-/usr/local/bin/xray test -c /usr/local/etc/xray/config.json >/dev/null \
+/usr/local/bin/xray run -test -c /usr/local/etc/xray/config.json >/dev/null \
   || fatal "Xray config failed validation. Check $CONFIG_DIR/xray-config.json.template"
 ok "Xray config valid."
 
